@@ -1,12 +1,12 @@
 # machine-learning-algorithms
 Contains implementations of the core machine learning algorithms.
 
-The implementations of the following classic ML algorithms imitate scikit-learn's API:
+The implementations of the following classic ML algorithms imitate scikit-learn's API:**
 - LinearRegression
 - LogisticRegression
 - DecisionTreeClassifier
 - RandomForestClassifier
-- SVC (support vector classifier)
+- SVC (support vector classifier)**
 
 Currently, the repository also contains implementations of several types of neural network layers and one  neural network model, all inspired by the Keras API:
 - Activation layer
