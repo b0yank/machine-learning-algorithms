@@ -147,7 +147,9 @@ class BatchNormalization(Layer):
         self.__dG = 0
         self.__mu_avg = None
         self.__sigma_avg = None
-        self.__N = 0
+        self.__mu_avg_hat = None
+        self.__sigma_avg_hat = None
+        self.__t = 1
 
         self.trainable = True if self.scale or self.center else False
 
@@ -164,8 +166,13 @@ class BatchNormalization(Layer):
         self.__actual_axis = self.axis if self.axis >= 0 else ndims + self.axis
 
         if mode == Mode.TEST:
-            sigma_denom = 1 / np.sqrt(self.__sigma_avg + self.epsilon)
-            X_hat = (np.moveaxis(prev_activations, self.__actual_axis, -1) - self.__mu_avg) * sigma_denom
+            #remove bias of exponentially weighted averages
+            if self.__mu_avg_hat is None:
+                self.__mu_avg_hat = self.__mu_avg / (1 - self.momentum ** self.__t)
+                self.__sigma_avg_hat = self.__sigma_avg / (1 - self.momentum ** self.__t)
+
+            sigma_denom = 1 / np.sqrt(self.__sigma_avg_hat + self.epsilon)
+            X_hat = (np.moveaxis(prev_activations, self.__actual_axis, -1) - self.__mu_avg_hat) * sigma_denom
             self.activations = np.moveaxis(X_hat * self.__gamma + self.__beta, -1, self.__actual_axis)
             return
 
@@ -177,10 +184,18 @@ class BatchNormalization(Layer):
         if self.__axis is None:
             self.__axis = tuple([ax for ax in np.arange(ndims) if ax != self.__actual_axis])
 
+        batch_size = len(prev_activations)
+
         mu = np.mean(prev_activations, axis = self.__axis)
         sigma = np.var(prev_activations, axis = self.__axis)
+
         self.__mu_avg = mu if self.__mu_avg is None else self.__mu_avg * self.momentum + (1 - self.momentum) * mu
-        self.__sigma_avg =  sigma if self.__sigma_avg is None else self.__sigma_avg * self.momentum + (1 - self.momentum) * sigma
+        # batch size variance is a biased estimator of population variance
+        # hence the batch_size / (batch_size - 1) correction 
+        bias_correction = batch_size / (batch_size - 1)
+        self.__sigma_avg =  sigma * bias_correction if self.__sigma_avg is None\
+                                            else self.__sigma_avg * self.momentum + (1 - self.momentum) * bias_correction * sigma
+        self.__t += 1
 
         self.__sigma_denom = 1 / np.sqrt(sigma + self.epsilon)
         self.__X_hat = (np.moveaxis(prev_activations, self.__actual_axis, -1) - mu) * self.__sigma_denom
