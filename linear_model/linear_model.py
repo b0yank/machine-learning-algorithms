@@ -7,6 +7,20 @@ from abc import abstractmethod
 class ModelNotTrainedException(Exception):
     pass
 
+PERCEPT_PENALTIES = {
+    None: lambda x: np.zeros(x.shape),
+    'l1': lambda x: np.sum(np.abs(x), axis = 0),
+    'l2': lambda x: 0.5 * np.sum(x ** 2),
+    'elasticnet': lambda x: np.sum(np.abs(x), axis = 0) + 0.5 * np.sum(x ** 2)
+}
+
+PERCEPT_DPENALTIES = {
+    None: lambda x: np.zeros(x.shape),
+    'l1': lambda x: x / (np.abs(x) + 1e-8),
+    'l2': lambda x: x,
+    'elasticnet': lambda x: x + x / (np.abs(x) + 1e-8)
+}
+
 class LinearSolver:
     @abstractmethod
     def __init__(self, C):
@@ -125,3 +139,44 @@ class LogisticRegression(LinearSolver):
             return 1 / (1 + np.exp(-z))
         
         return np.array([np.exp(z[:, i]) / np.sum(np.exp(z), axis = 1) for i in range(z.shape[1])]).T
+
+class Perceptron:
+    def __init__(self, penalty = None, alpha = 0.0001, eta0 = 1.0, max_iter = None, tol = None):
+        self.penalty = penalty
+        self._penalty = PERCEPT_PENALTIES[penalty]
+        self._dpenalty = PERCEPT_DPENALTIES[penalty]
+        self.alpha = alpha
+        self.eta0 = eta0
+        self.max_iter = 5 if max_iter is None else max_iter
+        self.tol = 1e-3 if tol is None else tol
+        self._bias = 0
+        
+    def fit(self, X, y):
+        self._weights = np.random.normal(size = (X.shape[1], 1))
+
+        for epoch in range(self.max_iter):
+            for inputs, label in zip(X, y):
+                predicted = self.predict(inputs)
+                diff = label - predicted
+
+                self._weights += (diff * self.eta0 * (inputs + self.alpha + self._dpenalty(diff)))\
+                                    .reshape((len(self._weights), 1))
+                    
+                self._bias += (label - predicted) * self.eta0
+                
+            preds = self.predict(X)
+            loss = np.mean(np.abs(y - preds))
+            
+            if loss < self.tol:
+                break
+            
+    def predict(self, X):
+        results = X.dot(self._weights) + self._bias
+        preds = np.array([1 if result > 0 else 0 for result in results])
+        return preds.reshape(-1, 1)
+    
+    def score(self, X, y):
+        y = y.reshape(-1, 1)
+        preds = self.predict(X)
+        return 1 - (np.count_nonzero(y - preds) / len(y))
+    
