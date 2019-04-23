@@ -20,18 +20,25 @@ class MeanSquaredLoss(Loss):
         return (y - t)
 
     def get_loss(self, true, predictions):
-        n = len(true)
-        return (1 / n) * np.sum((true - predictions) ** 2)
+        N = len(true)
+        return (1/N) * np.sum((true - predictions) ** 2)
         
 class CrossEntropyLoss(Loss):
     """Cross-entropy loss.
     """
     def output_deriv(self, y, t):
-        return -(t / y)
+        if t.shape[1] > 1:
+            return -(t / y)
+
+        return (y - t) / (y * (1 - y))
 
     def get_loss(self, true, predictions):
-        n = len(true)
-        return -(1 / n) * np.sum(true * np.log(predictions))
+        N = len(true)
+
+        if true.shape[1] > 1:
+            return -(1/N) * np.sum(true * np.log(predictions))
+
+        return -(1/N) * np.sum(true * np.log(predictions) + (1 - true) * np.log(1 - predictions))
 
 
 

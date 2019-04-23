@@ -71,7 +71,7 @@ class Adam(Optimizer):
         v = self.__v[key] if key in self.__v else 0
 
         self.__m[key] = self.beta_1 * m + (1 - self.beta_1) * gradients
-        self.__v[key] = self.beta_2  * v + (1 - self.beta_2) * (gradients ** 2)
+        self.__v[key] = self.beta_2 * v + (1 - self.beta_2) * (gradients ** 2)
         m_hat = self.__m[key] / (1 - self.beta_1 ** self.__t[key])
         v_hat = self.__v[key] / (1 - self.beta_2 ** self.__t[key])
 

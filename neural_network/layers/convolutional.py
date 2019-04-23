@@ -2,7 +2,7 @@ import numpy as np
 from skimage.util.shape import view_as_windows
 
 from .core import Layer
-from neural_network.utils import InvalidShapeError, Mode
+from neural_network.utils import InvalidShapeError
 
 PADDING_SAME = 'same'
 PADDING_VALID = 'valid'
@@ -24,12 +24,13 @@ class Conv2D(Layer):
                  kernel_reg_l2 = 0.0):
         super().__init__(activation = activation,
                          use_bias = use_bias,
-                         ndims = 4,
                          input_shape = input_shape,
                          kernel_reg_l2 = kernel_reg_l2)
         if use_bias:
             shape = tuple([1 if index != CHANNEL_AXIS else filters for index in range(CONV2D_NDIMS)])
             self._bias = np.zeros(shape)
+        else:
+            self._bias = 0
     
         self.filters = filters
         self.__filters = None
@@ -41,47 +42,6 @@ class Conv2D(Layer):
         if padding not in PADDING_TYPES:
             raise ValueError(f'Padding can be one of \'{PADDING_VALID}\' and \'{PADDING_SAME}\'')
         self.padding = padding
-        
-    def forward(self, prev_activations, mode):
-        self.input_shape = prev_activations.shape
-        if self.padding == PADDING_SAME:
-            prev_activations = self.__add_padding(prev_activations)
-
-        if self.__filters is None:
-            self.__filters = np.random.normal(size = ((self.filters, prev_activations.shape[CHANNEL_AXIS])) + tuple(self.__kernel_size))
-        
-        self.__convolutions = self.__convolve(prev_activations)
-        self.__X = prev_activations
-        bias = self._bias if self.use_bias else 0
-        self.activations = self._activation_func(self.__convolutions + bias)
-    
-    def backward(self, prev_activations, delta):
-        m = len(delta)
-        self.__dO = self._activation_deriv(self.__convolutions) * delta
-        self.__dX = self.__convolve(self.__dO, self.__filters, strides = (1, 1), full = True)
-        
-        # filters need to have padding = strides added between elements of output derivative (dO)
-        # they will act as the kernel in the derivative convolution done to find dF
-        moduli = (np.array(self.__X.shape[-2:]) - self.__kernel_size) % self.__strides
-        filter_pos = tuple((np.array(self.__dO.shape[-2:]) - 1) * self.__strides + 1 + moduli)
-        dF_filters = np.zeros(self.__dO.shape[:-2] + filter_pos)
-        dF_filters[..., 0:filter_pos[0]:self.__strides[0], 0:filter_pos[1]:self.__strides[1]] = self.__dO
-
-        self.__dF = (1 / m) * np.sum(self.__convolve(self.__X, dF_filters, strides = (1, 1), einsum_str = 'ijklmnop,iqop->iqjkl'), axis = 0)
-        
-        if self.use_bias:
-            out_shape = self.__dO.shape
-            axis = tuple([ax for ax in range(len(out_shape)) if ax != CHANNEL_AXIS])
-            denom = np.prod(out_shape) / out_shape[CHANNEL_AXIS]
-            self._dB = (1 / denom) * np.sum(self.__dO, axis = axis).reshape(self._bias.shape)          
-        
-        # remove padding elements when returning the deltas to get proper shape
-        padding = self.__kernel_size - 1
-        padding_up, padding_down, padding_left, padding_right = self.__calculate_padding(padding)
-        padded_height, padded_width = np.array(self.input_shape[-2:]) + padding
-        return self.__dX[...,
-                         padding_up: padded_height - padding_down,
-                         padding_left: padded_width - padding_right]
 
     @property
     def weights(self): return self.__filters
@@ -91,6 +51,49 @@ class Conv2D(Layer):
     def dW(self): return self.__dF
     @property
     def Z(self): return self.__X
+        
+    def forward(self, prev_activations, train_mode = True):
+        self.input_shape = prev_activations.shape
+        if self.padding == PADDING_SAME:
+            prev_activations = self.__add_padding(prev_activations)
+
+        if self.__filters is None:
+            self.__filters = np.random.normal(size = ((self.filters, prev_activations.shape[CHANNEL_AXIS])) + tuple(self.__kernel_size))
+        
+        self.__convolutions = self.__convolve(prev_activations)
+        self.__X = prev_activations
+        self.activations = self._activation.get_activation(self.__convolutions + self.bias)
+    
+    def backward(self, prev_activations, delta, train_mode = True):
+        self.__dO = self._activation.get_delta(self.__convolutions + self.bias, delta)
+        self.__dX = self.__convolve(self.__dO, self.__filters, strides = (1, 1), full = True)
+        
+        # filters need to have padding = strides added between elements of output derivative (dO)
+        # they will act as the kernel in the derivative convolution done to find dF
+        moduli = (np.array(self.__X.shape[-2:]) - self.__kernel_size) % self.__strides
+        filter_pos = tuple((np.array(self.__dO.shape[-2:]) - 1) * self.__strides + 1 + moduli)
+        dF_filters = np.zeros(self.__dO.shape[:-2] + filter_pos)
+        dF_filters[..., 0:filter_pos[0]:self.__strides[0], 0:filter_pos[1]:self.__strides[1]] = self.__dO
+
+        self.__dF = np.mean(self.__convolve(self.__X, dF_filters, strides = (1, 1), einsum_str = 'ijklmnop,iqop->iqjkl'), axis = 0)
+        
+        if self.use_bias:
+            axis = tuple([ax for ax in range(len(self.__dO.shape)) if ax != CHANNEL_AXIS])
+            self._dB = np.mean(self.__dO, axis = axis).reshape(self._bias.shape)   
+
+        if self.padding == PADDING_VALID:
+            return self.__dX
+            
+        dX = np.zeros(self.__X.shape)
+        dX[..., 0:self.__dX.shape[-2], 0:self.__dX.shape[-1]] = self.__dX
+        
+        # remove padding elements when returning the deltas to get proper shape
+        padding = self.__kernel_size - 1
+        padding_up, padding_down, padding_left, padding_right = self.__calculate_padding(padding)
+        padded_height, padded_width = np.array(self.input_shape[-2:]) + padding
+        return dX[...,
+                    padding_up: padded_height - padding_down,
+                    padding_left: padded_width - padding_right]
     
     def output_shape(self, input_shape):
         if not self._output_shape:
@@ -147,9 +150,8 @@ class Conv2D(Layer):
             # padding doubles on a full convolution
             padding = padding * 2
 
-            # in case of full convolution, activations need to be spaced out with padding = strides between elements
-            moduli = (channel_shape - self.__kernel_size) % self.__strides
-            channel_shape = (channel_shape - 1) * self.__strides + 1 + moduli
+            ## in case of full convolution, activations need to be spaced out with padding = strides between elements
+            channel_shape = (channel_shape - 1) * self.__strides + 1
             padding_steps = self.__strides
 
         padding_up, padding_down, padding_left, padding_right = self.__calculate_padding(padding)

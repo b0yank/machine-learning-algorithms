@@ -1,54 +1,15 @@
 import numpy as np
 from abc import ABCMeta, abstractmethod
 
-from neural_network.utils import Mode
-
-# ACTIVATION FUNCTION TYPES
-LINEAR = 'linear'
-SOFTMAX = 'softmax'
-TANH = 'tanh'
-RELU = 'relu'
-
-def softmax(z):
-    x = z.reshape(len(z), -1)
-    sum_ = np.sum(np.exp(x), axis = 1).reshape(-1, 1)
-    return (np.exp(x) / sum_).reshape(z.shape)
-
-def softmax_deriv(z):
-    s = softmax(z)
-    orig_shape = s.shape
-    s = s.reshape(len(s), -1)
-    m, n = s.shape
-    diags = np.zeros((m, n, n))
-    diags[:, np.arange(n), np.arange(n)] = s
-    dots = np.einsum('ij,ik->ijk', s, s)
-    
-    return diags - dots
-
-ACTIVATION_FUNCTIONS = {
-    LINEAR: lambda z: z,
-    SOFTMAX: softmax,
-    TANH: lambda z: np.tanh(z),
-    RELU: lambda z: np.maximum(z, 0)
-}
-
-ACTIVATION_DERIVATIVES = {
-    LINEAR: lambda z: np.ones(z.shape),
-    SOFTMAX: softmax_deriv,
-    TANH: lambda z: 1 - np.tanh(z) ** 2,
-    RELU: lambda z: np.array(z > 0, dtype='int')
-}
-
-UNITS_NDIMS = 2
+from .. import activations, initializers, utils
 
 class Layer(metaclass = ABCMeta):
     """Abstract class acting as an interface for all layer types and providing some
        common initialization
     """
     def __init__(self,
-                 activation,
-                 use_bias,
-                 ndims,
+                 activation = None,
+                 use_bias = False,
                  input_shape = None,
                  kernel_reg_l2 = 0.0):
         self.trainable = True
@@ -56,11 +17,9 @@ class Layer(metaclass = ABCMeta):
         self._name = None
         self.activation = activation
         if activation == None:
-            activation = LINEAR
-        self._activation_func = ACTIVATION_FUNCTIONS[activation]
-        self._activation_deriv = ACTIVATION_DERIVATIVES[activation]
+            activation = activations.LINEAR
+        self._activation = activations.get(activation)
         self.use_bias = use_bias
-        self._ndims = ndims
         self._output_shape = self.output_shape(input_shape) if input_shape else None
         self.kernel_reg_l2 = kernel_reg_l2
         
@@ -78,14 +37,18 @@ class Layer(metaclass = ABCMeta):
     def dB(self): return self._dB
     
     @abstractmethod
-    def forward(self, prev_activations, mode = Mode.TRAIN):
+    def forward(self, prev_activations, train_mode = True):
         pass
     @abstractmethod
-    def backward(self, prev_activations, delta):
+    def backward(self, prev_activations, delta, train_mode = True):
         pass
     @abstractmethod
     def output_shape(self, input_shape):
         pass
+
+    def _add_weight(self, shape, initializer):
+        initializer_func = initializers.get(initializer)
+        return initializer_func(shape)
 
 class Flatten(Layer):
     """Flattens the input. Does not affect the batch size.
@@ -95,11 +58,11 @@ class Flatten(Layer):
         self._output_shape = None
         self.trainable = False
         
-    def forward(self, prev_activations, mode = Mode.TRAIN):
+    def forward(self, prev_activations, train_mode = True):
         self.input_shape = prev_activations.shape
         self.activations = prev_activations.reshape(len(prev_activations), -1)
     
-    def backward(self, prev_activations, delta):
+    def backward(self, prev_activations, delta, train_mode = True):
         return delta.reshape(self.input_shape)
         
     def output_shape(self, input_shape):
@@ -149,7 +112,7 @@ class BatchNormalization(Layer):
         self.__sigma_avg = None
         self.__mu_avg_hat = None
         self.__sigma_avg_hat = None
-        self.__t = 1
+        self.__t = 0
 
         self.trainable = True if self.scale or self.center else False
 
@@ -160,19 +123,18 @@ class BatchNormalization(Layer):
     @property
     def dW(self): return np.array([self.__dgamma, self.__dbeta])
 
-    def forward(self, prev_activations, mode = Mode.TRAIN):
+    def forward(self, prev_activations, train_mode = True):
         ndims = len(prev_activations.shape)
         # correct for negative axis input, e.g. axis=-1
         self.__actual_axis = self.axis if self.axis >= 0 else ndims + self.axis
 
-        if mode == Mode.TEST:
+        if not train_mode:
             #remove bias of exponentially weighted averages
-            if self.__mu_avg_hat is None:
-                self.__mu_avg_hat = self.__mu_avg / (1 - self.momentum ** self.__t)
-                self.__sigma_avg_hat = self.__sigma_avg / (1 - self.momentum ** self.__t)
+            mu_avg_hat = self.__mu_avg / (1 - self.momentum ** self.__t)
+            sigma_avg_hat = self.__sigma_avg / (1 - self.momentum ** self.__t)
 
-            sigma_denom = 1 / np.sqrt(self.__sigma_avg_hat + self.epsilon)
-            X_hat = (np.moveaxis(prev_activations, self.__actual_axis, -1) - self.__mu_avg_hat) * sigma_denom
+            sigma_denom = 1 / np.sqrt(sigma_avg_hat + self.epsilon)
+            X_hat = (np.moveaxis(prev_activations, self.__actual_axis, -1) - mu_avg_hat) * sigma_denom
             self.activations = np.moveaxis(X_hat * self.__gamma + self.__beta, -1, self.__actual_axis)
             return
 
@@ -187,14 +149,14 @@ class BatchNormalization(Layer):
         batch_size = len(prev_activations)
 
         mu = np.mean(prev_activations, axis = self.__axis)
-        sigma = np.var(prev_activations, axis = self.__axis)
+        sigma = np.var(prev_activations, axis = self.__axis) * (batch_size / (batch_size - 1))
 
-        self.__mu_avg = mu if self.__mu_avg is None else self.__mu_avg * self.momentum + (1 - self.momentum) * mu
-        # batch size variance is a biased estimator of population variance
-        # hence the batch_size / (batch_size - 1) correction 
-        bias_correction = batch_size / (batch_size - 1)
-        self.__sigma_avg =  sigma * bias_correction if self.__sigma_avg is None\
-                                            else self.__sigma_avg * self.momentum + (1 - self.momentum) * bias_correction * sigma
+        if self.__mu_avg is None:
+            self.__mu_avg = np.zeros(mu.shape)
+            self.__sigma_avg = np.zeros(sigma.shape)
+
+        self.__mu_avg = self.__mu_avg * self.momentum + (1 - self.momentum) * mu
+        self.__sigma_avg = self.__sigma_avg * self.momentum + (1 - self.momentum) * sigma
         self.__t += 1
 
         self.__sigma_denom = 1 / np.sqrt(sigma + self.epsilon)
@@ -202,7 +164,7 @@ class BatchNormalization(Layer):
         self.activations = np.moveaxis(self.__X_hat * self.__gamma + self.__beta, -1, self.__actual_axis)
         self.__X_hat = np.moveaxis(self.__X_hat, -1, self.__actual_axis)
             
-    def backward(self, prev_activations, delta):
+    def backward(self, prev_activations, delta, train_mode = True):
         if self.trainable:
             self.__dbeta = np.sum(delta, axis = self.__axis) if self.center else 0
             self.__dgamma = np.sum(self.__X_hat * delta, axis = self.__axis) if self.scale else 0
@@ -240,17 +202,16 @@ class Activation(Layer):
     """
     def __init__(self, activation):
         self.activation = activation
-        self._activation_func = ACTIVATION_FUNCTIONS[activation]
-        self._activation_deriv = ACTIVATION_DERIVATIVES[activation]
+        self._activation = activations.get(activation)
         self.use_bias = False
         self.trainable = False
 
-    def forward(self, prev_activations, mode = Mode.TRAIN):
-        self.activations = self._activation_func(prev_activations)
+    def forward(self, prev_activations, train_mode = True):
+        self.activations = self._activation.get_activation(prev_activations)
         return self.activations
 
-    def backward(self, prev_activations, delta):
-        return prev_activations * delta
+    def backward(self, prev_activations, delta, train_mode = True):
+        return self._activation.get_delta(prev_activations, delta)
 
     def output_shape(self, input_shape):
         return input_shape
@@ -266,7 +227,6 @@ class Dense(Layer):
                  kernel_reg_l2 = 0.0):
         super().__init__(activation = activation,
                          use_bias = use_bias,
-                         ndims = 2,
                          input_shape = input_shape,
                          kernel_reg_l2 = kernel_reg_l2)
         self.units = units
@@ -280,24 +240,21 @@ class Dense(Layer):
     @weights.setter
     def weights(self, weights): self.__weights = weights
     @property
-    def dW(self): return self.__dW    
+    def dW(self): return self.__dW 
         
-    def forward(self, prev_activations, mode = Mode.TRAIN):
+    def forward(self, prev_activations, train_mode = True):
         if self.weights is None:
-            weight_shape = (self.units, prev_activations.shape[1])
+            weight_shape = (self.units, prev_activations.shape[-1])
             self.__weights = np.random.normal(size = weight_shape)
             
         bias = self._bias if self.use_bias else 0
         self.__z = prev_activations.dot(self.__weights.T) + bias
-        self.activations = self._activation_func(self.__z)
+        self.activations = self._activation.get_activation(self.__z)
  
-    def backward(self, prev_activations, delta):
+    def backward(self, prev_activations, delta, train_mode = True):
         m = len(delta)
         
-        activ_deriv = self._activation_deriv(self.__z)
-        # summing is required in case of activations whose derivatives output a Jacobian matrix (s.a. softmax)
-        sum_str = 'i...j,ij->i...' if len(activ_deriv.shape) > UNITS_NDIMS else 'i...j,ij->i...j'
-        self.__dZ = np.einsum(sum_str, activ_deriv, delta)
+        self.__dZ = self._activation.get_delta(self.__z, delta)
 
         self.__dW = (1 / m) * self.__dZ.T.dot(prev_activations)
         if self.use_bias:
@@ -314,6 +271,56 @@ class Dense(Layer):
             self._output_shape = (input_shape[0], self.units)
             
         return  self._output_shape
+
+class Dropout(Layer):
+    def __init__(self, rate,
+                 noise_shape = None,
+                 seed = None):
+        self.rate = rate
+        self.noise_shape = noise_shape
+        self.seed = seed
+        self.trainable = False
+        self.__random_state = np.random.RandomState(seed = seed)
+
+    def forward(self, prev_activations, train_mode = True):
+        if self.seed is not None:
+            np.random.RandomState()
+        
+        if self.rate < 0 or self.rate >= 1:
+            raise ValueError('Dropout range is [0, 1).')
+
+        if not train_mode:
+            return prev_activations
+
+        mask_shape = prev_activations.shape if self.noise_shape is None else noise_shape
+        self.__mask = self.__random_state.uniform(mask_shape) >= self.rate
+
+        return prev_activations * (self.__mask / (1 - self.rate))
+
+    def backward(self, prev_activations, delta, train_mode = True):
+        if train_mode:
+            delta *= (self.__mask / (1 - self.rate))
+        return delta
+
+class Masking(Layer):
+    def __init__(self, mask_value = 0.):
+        self.mask_value = mask_value
+        self.trainable = False
+
+    def forward(self, prev_activations, train_mode = True):
+        activs_time_major = prev_activations.swapaxes(utils.TIMESTEP_AXIS, 0)
+
+        self.__unmasked_idxs = [np.any(activs_time_major[i] != self.mask_value) for i in range(activs_time_major.shape[0])]
+        self.activations = activs_time_major[self.__unmasked_idxs].swapaxes(utils.TIMESTEP_AXIS, 0)
+
+    def backward(self, prev_activations, delta, train_mode = True):
+        deltas = np.ones(prev_activations.shape) * self.mask_value
+        deltas.swapaxes(utils.TIMESTEP_AXIS, 0)[self.__unmasked_idxs] = delta.swapaxes(utils.TIMESTEP_AXIS, 0)
+
+        return deltas
+
+    def output_shape(self, input_shape):
+        return input_shape[:utils.TIMESTEP_AXIS] + (None,) + input_shape[utils.TIMESTEP_AXIS + 1:]
 
 
 

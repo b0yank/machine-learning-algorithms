@@ -1,6 +1,6 @@
 import numpy as np
 
-from neural_network.utils import InvalidShapeError, Mode
+from neural_network.utils import InvalidShapeError, ModelArchitectureError
 from .layers.core import Layer
 from .losses import Loss, CrossEntropyLoss, MeanSquaredLoss
 from .optimizers import Optimizer, Adam, SGD
@@ -32,17 +32,21 @@ class Sequential:
         if not self.__compiled:
             raise RuntimeError('You must compile a model before training/testing. '
                                'Use `model.compile(optimizer, loss)`.')
-            
+        
         n_samples = X.shape[0]
         self.__labels = list(set(y))
-        y_onehot = self.__onehot_encode(y)
+        y_onehot = self.__onehot_encode(y) if len(self.__labels) > 2 else y.reshape(-1, 1)
         X_batches = [X[i:i + batch_size] for i in range(0, n_samples, batch_size)]
         y_batches = [y_onehot[i:i + batch_size] for i in range(0, n_samples, batch_size)]
         
         for it in range(epochs):
             for batch_index in range(len(X_batches)):
-                self.__forward(X_batches[batch_index], mode = Mode.TRAIN)
-                self.__backward(X_batches[batch_index], y_batches[batch_index])
+                self.__forward(X_batches[batch_index], train_mode = True)
+                self.__backward(X_batches[batch_index], y_batches[batch_index], train_mode = True)
+            
+            print(f'Epoch {it + 1}:')
+            loss, accuracy = self.evaluate(X, y, batch_size)
+            print(f'Training loss: {loss}, training accuracy: {accuracy}')
 
             self.__optimizer.decay_lr()
 
@@ -62,11 +66,16 @@ class Sequential:
                 y_batch = y_batches[batch_index]
                 onehot_batch = y_oh_batches[batch_index]
 
-                self.__forward(X_batch, mode = Mode.TEST)
+                self.__forward(X_batch, train_mode = False)
                 activations = self.layers[-1].activations
-                loss += self.__loss.get_loss(onehot_batch, activations)
                 
-                predictions = np.array([self.__labels[np.argmax(activation)] for activation in activations])
+                if self.layers[-1].activations.shape[-1] == 1:
+                    current_loss = self.__loss.get_loss(y_batch.reshape(-1, 1), activations)
+                    predictions = np.array([self.__labels[int(np.round(activation))] for activation in activations])
+                else:
+                    current_loss = self.__loss.get_loss(onehot_batch, activations)
+                    predictions = np.array([self.__labels[np.argmax(activation)] for activation in activations])
+                loss += current_loss
                 diff = y_batch - predictions
                 accuracy +=  1 - (np.count_nonzero(diff) / len(y_batch))
 
@@ -74,24 +83,25 @@ class Sequential:
         accuracy /= n_batches
         return loss, accuracy
     
-    def __forward(self, X_batch, mode):
+    def __forward(self, X_batch, train_mode = True):
         activations = X_batch
         for layer in self.layers:
-            layer.forward(activations, mode)
+            layer.forward(activations, train_mode)
             activations = layer.activations
     
-    def __backward(self, X_batch, y_batch):
+    def __backward(self, X_batch, y_batch, train_mode = True):
         output_layer = self.layers[-1]
         delta = self.__loss.output_deriv(y = output_layer.activations, t = y_batch)
-    
+
         index = len(self.layers) - 1
         while index >= 0:
             layer = self.layers[index]
             prev_activations = self.layers[index - 1].activations if index > 0 else X_batch
-            delta = layer.backward(prev_activations, delta)
+            delta = layer.backward(prev_activations, delta, train_mode)
+
             if layer.trainable:
                 self.__optimizer.update_weights(layer)
-        
+
             index -= 1
     
     def __get_optimizer(self, optimizer):
