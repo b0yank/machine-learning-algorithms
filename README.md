@@ -15,6 +15,10 @@ Currently, the repository also contains implementations of several types of neur
 - **Conv2D layer**
 - **Dense layer**
 - **Dropout layer**
+- **GlobalAveragePooling2D layer**
+- **GlobalMaxPooling2D layer**
+- **AveragePooling2D layer**
+- **MaxPooling2D layer**
 - **Flatten layer**
 - **Embedding layer**
 - **Masking layer**
