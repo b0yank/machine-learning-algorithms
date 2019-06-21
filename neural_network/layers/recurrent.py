@@ -21,8 +21,7 @@ class RNN(Layer):
                  return_sequences = False,
                  stateful = False):
         super().__init__(activation = activation,
-                         use_bias = use_bias,
-                         ndims = 3)
+                         use_bias = use_bias)
         self.units = units
         self.dropout = dropout
         self.recurrent_dropout = recurrent_dropout

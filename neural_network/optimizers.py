@@ -38,7 +38,7 @@ class SGD(Optimizer):
 
         V_dW = self.momentum * past_updates + (1 - self.momentum) * gradients
         self.__past_updates[key] = gradients
-        layer.weights = layer.weights - self.lr * gradients - layer.kernel_reg_l2 * layer.weights
+        layer.weights = layer.weights - self.lr * V_dW - layer.kernel_reg_l2 * layer.weights
 
         if layer.use_bias:
             past_bias = self.__past_bias[key] if key in self.__past_bias else 0
