@@ -1,10 +1,12 @@
 import numpy as np
 from abc import ABCMeta, abstractmethod
 
+from neural_network.layers import LayerNormalization
+
 class Optimizer(metaclass = ABCMeta):
     """Abstract optimizer base class.
 
-    Note: this is the parent class of all optimizers, not an actual optimizer
+    Note: this is the parent class of all optimizers, not a concrete optimizer
     that can be used for training models.
     """
     def __init__(self, lr, decay):
@@ -63,6 +65,9 @@ class Adam(Optimizer):
         self.__t = dict()
         
     def update_weights(self, layer):
+        if not layer.trainable:
+            return
+
         key = layer._name
         self.__t[key] = self.__t[key] + 1 if key in self.__t else 1
 
@@ -87,5 +92,6 @@ class Adam(Optimizer):
             v_bias_hat = self.__v_bias[key] / (1 - self.beta_2 ** self.__t[key])
 
             layer.bias = layer.bias - self.lr * m_bias_hat / (np.sqrt(v_bias_hat) + self.epsilon)
+
 
 

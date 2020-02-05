@@ -2,7 +2,7 @@ import numpy as np
 from abc import ABCMeta, abstractmethod
 from skimage.util.shape import view_as_windows
 
-from .core import Layer2D
+from .core import Layer, Layer2D
 from neural_network.utils import CHANNEL_AXIS, PADDING_SAME, PADDING_VALID, PADDING_TYPES, im2col
 
 HEIGHT_AXIS = -2
@@ -112,6 +112,7 @@ class GlobalPooling2D(Layer2D):
     """Abstract class for different global pooling 2D layers.
     """
     def __init__(self):
+        super(Layer, self).__init__()
         self.trainable = False
 
     def forward(self, prev_activations, train_mode = True):
@@ -156,9 +157,7 @@ class GlobalMaxPooling2D(GlobalPooling2D):
         return np.max(inputs, axis = (HEIGHT_AXIS, WIDTH_AXIS))
 
 
-
 # Aliases
-
 AvgPool2D = AveragePooling2D
 MaxPool2D = MaxPooling2D
 GlobalMaxPool2D = GlobalMaxPooling2D

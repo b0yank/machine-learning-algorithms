@@ -1,3 +1,1 @@
-from tree.tree import DecisionTreeClassifier, RandomForestClassifier
-
-
+from .tree import DecisionTreeClassifier

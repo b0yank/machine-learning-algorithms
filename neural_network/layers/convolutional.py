@@ -105,3 +105,4 @@ class Conv2D(Layer2D):
         convolutions = np.einsum(einsum_str, views, filters)
         return convolutions
 
+

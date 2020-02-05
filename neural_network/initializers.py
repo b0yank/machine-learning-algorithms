@@ -38,3 +38,4 @@ def get(identifier):
         return _INITIALIZERS[identifier]
     else:
         raise ValueError('Could not interpret initializer identifier: ' + str(identifier))
+

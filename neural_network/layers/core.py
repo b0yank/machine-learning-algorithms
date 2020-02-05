@@ -3,19 +3,25 @@ from abc import ABCMeta, abstractmethod
 
 from .. import activations, initializers
 from neural_network.utils import PADDING_SAME, PADDING_VALID, PADDING_TYPES, TIMESTEP_AXIS
+from utils.graph import Node
 
-class Layer(metaclass = ABCMeta):
+class Layer(Node, metaclass = ABCMeta):
     """Abstract class acting as an interface for all layer types and providing some
        common initialization
+
+       Warnings: 1) If inheriting classes do not call Layer.__init__(), they should at least call the Node.__init__() method.
+                 2) All layers are assumed to be trainable. Layers that are not intended to be trained should explicitly set self.trainable = False
     """
     def __init__(self,
                  activation = None,
                  use_bias = False,
                  input_shape = None,
                  kernel_reg_l2 = 0.0):
+        super().__init__()
         self.trainable = True
         self.input_shape = input_shape
         self._name = None
+
         self.activation = activation
         if activation == None:
             activation = activations.LINEAR
@@ -36,16 +42,21 @@ class Layer(metaclass = ABCMeta):
     def bias(self, bias): self._bias = bias
     @property
     def dB(self): return self._dB
+
+    def _compute_forward_message(self, inputs):
+        self.forward(**inputs)
+        return self.activations
+
+    def _compute_backward_message(self, inputs):
+        delta = self.backward(**inputs)
+        return delta
     
     @abstractmethod
-    def forward(self, prev_activations, train_mode = True):
-        pass
+    def forward(self, prev_activations, train_mode = True, *args, **kwargs): pass
     @abstractmethod
-    def backward(self, prev_activations, delta, train_mode = True):
-        pass
+    def backward(self, prev_activations, delta, train_mode = True, *args, **kwargs): pass
     @abstractmethod
-    def output_shape(self, input_shape):
-        pass
+    def output_shape(self, input_shape): pass
 
     def _add_weight(self, shape, initializer):
         initializer_func = initializers.get(initializer)
@@ -160,15 +171,16 @@ class Flatten(Layer):
     """Flattens the input. Does not affect the batch size.
     """
     def __init__(self):
+        super(Layer, self).__init__()
         self.input_shape = None
         self._output_shape = None
         self.trainable = False
         
-    def forward(self, prev_activations, train_mode = True):
+    def forward(self, prev_activations, train_mode = True, *args, **kwargs):
         self.input_shape = prev_activations.shape
         self.activations = prev_activations.reshape(len(prev_activations), -1)
     
-    def backward(self, prev_activations, delta, train_mode = True):
+    def backward(self, prev_activations, delta, train_mode = True, *args, **kwargs):
         return delta.reshape(self.input_shape)
         
     def output_shape(self, input_shape):
@@ -198,6 +210,7 @@ class BatchNormalization(Layer):
                  gamma_initializer = 'ones',
                  beta_regularization = 0.0,
                  gamma_regularization = 0.0):
+        super().__init__()
         self.axis = axis
         self.__axis = None
         self.momentum = momentum
@@ -229,7 +242,7 @@ class BatchNormalization(Layer):
     @property
     def dW(self): return np.array([self.__dgamma, self.__dbeta])
 
-    def forward(self, prev_activations, train_mode = True):
+    def forward(self, prev_activations, train_mode = True, *args, **kwargs):
         ndims = len(prev_activations.shape)
         # correct for negative axis input, e.g. axis=-1
         self.__actual_axis = self.axis if self.axis >= 0 else ndims + self.axis
@@ -270,7 +283,7 @@ class BatchNormalization(Layer):
         self.activations = np.moveaxis(self.__X_hat * self.__gamma + self.__beta, -1, self.__actual_axis)
         self.__X_hat = np.moveaxis(self.__X_hat, -1, self.__actual_axis)
             
-    def backward(self, prev_activations, delta, train_mode = True):
+    def backward(self, prev_activations, delta, train_mode = True, *args, **kwargs):
         if self.trainable:
             self.__dbeta = np.sum(delta, axis = self.__axis) if self.center else 0
             self.__dgamma = np.sum(self.__X_hat * delta, axis = self.__axis) if self.scale else 0
@@ -303,20 +316,60 @@ class BatchNormalization(Layer):
         self.__gamma = functions[self.gamma_initializer](shape) if self.scale else 1
         self.__beta = functions[self.beta_initializer](shape) if self.center else 0
 
+class LayerNormalization(Layer):
+    def __init__(self):
+        super().__init__(use_bias=True)
+
+        self.__gain = None
+        self._bias = None
+        self.__epsilon = 1e-6
+
+    @property
+    def weights(self): return self.__gain
+    @weights.setter
+    def weights(self, weights):
+        self.__gain = weights
+        
+    @property
+    def dW(self): return self.__dg
+
+    def forward(self, prev_activations, train_mode = True, *args, **kwargs):
+        if self.__gain is None or self._bias is None:
+            self.__gain = np.ones(shape=(1, prev_activations.shape[-1]))
+            self._bias = np.zeros(shape=(1, prev_activations.shape[-1]))
+
+        miu = np.sum(prev_activations, axis=0) / len(prev_activations)
+        sigma = np.sum((prev_activations - miu) ** 2) / len(prev_activations)
+        self.__denom = np.sqrt(sigma + self.__epsilon)
+        norm = (prev_activations - miu) / self.__denom
+       
+        act = norm * self.__gain + self._bias
+        self.activations = act
+
+    def backward(self, prev_activations, delta, train_mode = True, *args, **kwargs):
+        self._dB = np.mean(delta, axis=tuple([ax for ax in range(len(delta.shape) - 1)])).reshape(1, -1)
+        self.__dg = np.mean(delta * self.activations, axis=tuple([ax for ax in range(len(delta.shape) - 1)])).reshape(1, -1)
+
+        return delta * self.__gain / self.__denom
+
+    def output_shape(self, input_shape): return input_shape
+
 class Activation(Layer):
     """ Applies an activation function to an output.
     """
     def __init__(self, activation):
+        super(Layer, self).__init__()
+
         self.activation = activation
         self._activation = activations.get(activation)
         self.use_bias = False
         self.trainable = False
 
-    def forward(self, prev_activations, train_mode = True):
+    def forward(self, prev_activations, train_mode = True, *args, **kwargs):
         self.activations = self._activation.get_activation(prev_activations)
         return self.activations
 
-    def backward(self, prev_activations, delta, train_mode = True):
+    def backward(self, prev_activations, delta, train_mode = True, *args, **kwargs):
         return self._activation.get_delta(prev_activations, delta)
 
     def output_shape(self, input_shape):
@@ -331,64 +384,69 @@ class Dense(Layer):
                  use_bias = True,
                  input_shape = None,
                  kernel_reg_l2 = 0.0):
+        self.units = units
+        self._weights = None
+        if use_bias:
+            self._bias = np.zeros((1, units))
+
         super().__init__(activation = activation,
                          use_bias = use_bias,
                          input_shape = input_shape,
                          kernel_reg_l2 = kernel_reg_l2)
-        self.units = units
-        self.activations = np.array([])
-        self.__weights = None
-        if use_bias:
-            self._bias = np.zeros((1, units))
+
+        if input_shape is not None:
+            self.weights = np.random.normal(size = (self.units, input_shape[1]))
             
     @property
-    def weights(self): return self.__weights
+    def weights(self): return self._weights
     @weights.setter
-    def weights(self, weights): self.__weights = weights
+    def weights(self, weights): self._weights = weights
     @property
     def dW(self): return self.__dW 
         
-    def forward(self, prev_activations, train_mode = True):
+    def forward(self, prev_activations, train_mode = True, *args, **kwargs):
         if self.weights is None:
             weight_shape = (self.units, prev_activations.shape[-1])
-            self.__weights = np.random.normal(size = weight_shape)
+            self._weights = np.random.normal(size = weight_shape)
             
         bias = self._bias if self.use_bias else 0
-        self.__z = prev_activations.dot(self.__weights.T) + bias
+        self.__z = prev_activations.dot(self.weights.T) + bias
         self.activations = self._activation.get_activation(self.__z)
  
-    def backward(self, prev_activations, delta, train_mode = True):
+    def backward(self, prev_activations, delta, train_mode = True, *args, **kwargs):
         m = len(delta)
         
-        self.__dZ = self._activation.get_delta(self.__z, delta)
+        dZ = self._activation.get_delta(self.__z, delta)
 
-        self.__dW = (1 / m) * self.__dZ.T.dot(prev_activations)
+        if len(delta.shape) == 3:
+            self.__dW = np.einsum('ijk,ijl->kl', dZ, prev_activations)
+        else:
+            self.__dW = dZ.T.dot(prev_activations)
+
         if self.use_bias:
-            self._dB = (1 / m) * np.sum(self.__dZ, axis = 0).reshape(1, -1)
+            axes = (0, 1) if len(dZ.shape) == 3 else 0
+            self._dB = (1 / m) * np.sum(dZ, axis = axes).reshape(1, -1)
         
         # delta is basically dE/dA of the layer one level back (derivative of activations)
-        delta_new = self.__dZ.dot(self.__weights)
+        delta_new = dZ.dot(self.weights)
         return delta_new
         
     def output_shape(self, input_shape):
-        if self._output_shape is None:
-            if input_shape is None:
-                return None
-            self._output_shape = (input_shape[0], self.units)
-            
-        return  self._output_shape
+        return (self.units, input_shape[1])
 
 class Dropout(Layer):
     def __init__(self, rate,
                  noise_shape = None,
                  seed = None):
+        super(Layer, self).__init__()
+
         self.rate = rate
         self.noise_shape = noise_shape
         self.seed = seed
         self.trainable = False
         self.__random_state = np.random.RandomState(seed = seed)
 
-    def forward(self, prev_activations, train_mode = True):
+    def forward(self, prev_activations, train_mode = True, *args, **kwargs):
         if self.seed is not None:
             np.random.RandomState()
         
@@ -396,30 +454,34 @@ class Dropout(Layer):
             raise ValueError('Dropout range is [0, 1).')
 
         if not train_mode:
-            return prev_activations
+            self.activations = prev_activations
 
         mask_shape = prev_activations.shape if self.noise_shape is None else noise_shape
-        self.__mask = self.__random_state.uniform(mask_shape) >= self.rate
+        self.__mask = self.__random_state.uniform(size=mask_shape) >= self.rate
 
-        return prev_activations * (self.__mask / (1 - self.rate))
+        self.activations = prev_activations * (self.__mask / (1 - self.rate))
 
-    def backward(self, prev_activations, delta, train_mode = True):
+    def backward(self, prev_activations, delta, train_mode = True, *args, **kwargs):
         if train_mode:
             delta *= (self.__mask / (1 - self.rate))
         return delta
 
+    def output_shape(self, input_shape): return input_shape
+
 class Masking(Layer):
     def __init__(self, mask_value = 0.):
+        super(Layer, self).__init__()
+
         self.mask_value = mask_value
         self.trainable = False
 
-    def forward(self, prev_activations, train_mode = True):
+    def forward(self, prev_activations, train_mode = True, *args, **kwargs):
         activs_time_major = prev_activations.swapaxes(TIMESTEP_AXIS, 0)
 
         self.__unmasked_idxs = [np.any(activs_time_major[i] != self.mask_value) for i in range(activs_time_major.shape[0])]
         self.activations = activs_time_major[self.__unmasked_idxs].swapaxes(TIMESTEP_AXIS, 0)
 
-    def backward(self, prev_activations, delta, train_mode = True):
+    def backward(self, prev_activations, delta, train_mode = True, *args, **kwargs):
         deltas = np.ones(prev_activations.shape) * self.mask_value
         deltas.swapaxes(TIMESTEP_AXIS, 0)[self.__unmasked_idxs] = delta.swapaxes(TIMESTEP_AXIS, 0)
 
@@ -427,6 +489,9 @@ class Masking(Layer):
 
     def output_shape(self, input_shape):
         return input_shape[:TIMESTEP_AXIS] + (None,) + input_shape[TIMESTEP_AXIS + 1:]
+
+
+
 
 
 
