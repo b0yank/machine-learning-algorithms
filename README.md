@@ -1,5 +1,5 @@
 # machine-learning-algorithms
-Contains implementations of the core machine learning algorithms.
+Contains implementations from scratch of the core machine learning algorithms using NumPy.
 
 The implementations of the following classic ML algorithms imitate scikit-learn's API:
 - **LinearRegression**
@@ -12,6 +12,7 @@ The implementations of the following classic ML algorithms imitate scikit-learn'
 Currently, the repository also contains implementations of several types of neural network layers and the Sequential neural network model, all inspired by the Keras API:
 - **Activation layer**
 - **BatchNormalization layer**
+- **LayerNormalization layer**
 - **Conv2D layer**
 - **Dense layer**
 - **Dropout layer**
@@ -26,6 +27,8 @@ Currently, the repository also contains implementations of several types of neur
 - **GRU layer**
 - **LSTM layer**
 - **Sequential model**
+- **EncoderDecoder model**
+- **Transformer architecture**
 
 The repository currently supports stochastic gradient descent (**SGD**) and **Adam** optimizers. In terms of loss functions, the choice is between **cross-entropy** and **mean squared loss**.
 
