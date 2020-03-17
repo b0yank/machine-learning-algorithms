@@ -9,7 +9,7 @@ The implementations of the following classic ML algorithms imitate scikit-learn'
 - **SVC (support vector classifier)**
 - **Perceptron**
 
-Currently, the repository also contains implementations of several types of neural network layers and the Sequential neural network model, all inspired by the Keras API:
+Currently, the repository also contains implementations of several types of neural network layers, plus a Sequential and EncoderDecoder neural network models, all (except EncoderDecoder) inspired by the Keras API:
 - **Activation layer**
 - **BatchNormalization layer**
 - **LayerNormalization layer**
@@ -30,7 +30,7 @@ Currently, the repository also contains implementations of several types of neur
 - **EncoderDecoder model**
 - **Transformer architecture**
 
-The repository currently supports stochastic gradient descent (**SGD**) and **Adam** optimizers. In terms of loss functions, the choice is between **cross-entropy** and **mean squared loss**.
+The repository currently supports the stochastic gradient descent (**SGD**) and **Adam** optimizers. In terms of loss functions, the choice is between **cross-entropy** and **mean squared loss**.
 
 Please note that I am still learning and am not a professional practitioner. I am in the process of learning the details of ML/DL algorithms and architectures, and it is very likely that some of the implementations may **not** be entirely correct or bug-free.
 
